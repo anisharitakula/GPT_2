@@ -14,9 +14,12 @@ split=0.9
 block_size=8
 batch_size=32
 epochs=10
-learning_rate=1e-2
-max_iters=3000
+learning_rate=1e-3
+max_iters=5200
 eval_iters=200
+n_embed=32
+head_size=16
+n_attention_heads=4
 
 stoi={s:i for i,s in enumerate(vocab)}
 itos={i:s for i,s in enumerate(vocab)}
@@ -32,30 +35,79 @@ val_data=data[round(split*text_length):]
 
 
 
-torch.manual_seed(1337)
+class SelfAttention(nn.Module):
+    def __init__(self,head_size):
+        super().__init__()
+        self.key=nn.Linear(n_embed,head_size,bias=False)
+        self.query=nn.Linear(n_embed,head_size,bias=False)
+        self.value=nn.Linear(n_embed,head_size,bias=False)
+
+
+    
+    def forward(self,x):
+        B,T,C= x.shape
+        tril=torch.tril(torch.ones(T,T))
+        k=self.key(x)
+        q=self.query(x)
+        v=self.value(x)
+
+        weights=q@k.transpose(-2,-1)*C**-0.5#(B,T,16)@ (B,16,T)--> (B,T,T)
+
+        weights=weights.masked_fill(tril==0,float('-inf'))
+        weights=F.softmax(weights,dim=1)
+        out=weights@v#(T,T)@(B,T,HS)--> (B,T,HS)
+        return out
+
+class MutiHeadAttention(nn.Module):
+    def __init__(self,num_heads,head_size):
+        super().__init__()
+        self.multihead=nn.ModuleList([SelfAttention(head_size) for _ in range(num_heads)])
+    
+    def forward(self,x):
+        x=torch.cat([h(x) for h in self.multihead],dim=-1)
+        return x
+
 class BigramLanguageModel(nn.Module):
 
-    def __init__(self,vocab_size):
+    def __init__(self):
         super().__init__()
-        self.token_embedding=nn.Embedding(num_embeddings=vocab_size,
-                                          embedding_dim=vocab_size)
+        self.token_embedding=nn.Embedding(vocab_size,
+                                          n_embed)
+        self.position_embedding=nn.Embedding(block_size,n_embed)
+        self.attention=SelfAttention(head_size)
+        self.ln1=nn.Linear(head_size,vocab_size)
     
     def forward(self,idx,targets=None):
-        logits=self.token_embedding(idx)
+        B,T=idx.shape
+
+        
+        tok_emb=self.token_embedding(idx)#B,T,n_embed
+        pos_emb=self.position_embedding(torch.arange(T))#T,n_embed
+        
+        
+        x=tok_emb + pos_emb #B,T,n_embed
+        x=self.attention(x)
+        logits=self.ln1(x)
+        
+        B,T,C=logits.shape
+        logits=logits.view(B*T,C)
+        
         if targets is None:
             loss=None
         else:
-            B,T,C=logits.shape
-            logits=logits.view(B*T,C)
             targets=targets.view(B*T)
             loss=F.cross_entropy(logits,targets)
         return logits,loss
     
     def generate(self,idx,max_new_tokens):
         for i in range(max_new_tokens):
-            logits,loss=self(idx)#(B,T,C)
+            # crop idx to the last block size tokens
+            idx_cond=idx[:,-block_size:]
 
-            logits=logits[:,-1,:]#(B,C)
+            logits,loss=self(idx_cond)#(B,T,C)
+            
+            
+            logits=logits[-1,:].view(1,-1)#(B,C)
 
             probs=F.softmax(logits,dim=1) #(B,C)
             #idx_next=torch.argmax(probs,dim=1).view(-1,1) #(B,1)
@@ -89,10 +141,10 @@ def estimate_loss():
     model.train()
     return loss_dict
 
-model=BigramLanguageModel(vocab_size)
-x_batches,y_batches=get_batch('train')
-logits,loss=model(x_batches,y_batches)
-print(loss)
+model=BigramLanguageModel()
+# x_batches,y_batches=get_batch('train')
+# logits,loss=model(x_batches,y_batches)
+# print(loss)
 
 optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
 
@@ -109,6 +161,6 @@ for iter in range(max_iters):
     optimizer.step()
 
 idx=torch.zeros((1,1),dtype=torch.long)
-print(decode(model.generate(idx,500)[0].tolist())) 
+print(decode(model.generate(idx=idx,max_new_tokens=500)[0].tolist())) 
 
         
