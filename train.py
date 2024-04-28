@@ -94,6 +94,15 @@ class MutiHeadAttention(nn.Module):
         x=torch.cat([h(x) for h in self.multihead],dim=-1)
         return x
 
+class FeedForward(nn.Module):
+
+    def __init__(self,n_embed):
+        super().__init__()
+        self.net=nn.Sequential(nn.Linear(n_embed,n_embed),nn.ReLU(n_embed))
+    
+    def forward(self, x):
+        return self.net(x)
+
 class GPTLanguageModel(nn.Module):
 
     def __init__(self):
@@ -101,8 +110,9 @@ class GPTLanguageModel(nn.Module):
         self.token_embedding=nn.Embedding(vocab_size,
                                           n_embed)
         self.position_embedding=nn.Embedding(block_size,n_embed)
-        self.multi_attention=MutiHeadAttention(n_attention_heads,head_size//n_attention_heads)
-        self.ln1=nn.Linear(head_size,vocab_size)
+        self.multi_attention=MutiHeadAttention(n_attention_heads,n_embed//n_attention_heads)
+        self.ffd=FeedForward(n_embed)
+        self.ln1=nn.Linear(n_embed,vocab_size)
     
     def forward(self,idx,targets=None):
         B,T=idx.shape
@@ -114,6 +124,7 @@ class GPTLanguageModel(nn.Module):
         
         x=tok_emb + pos_emb #B,T,n_embed
         x=self.multi_attention(x)
+        x=self.ffd(x)
         logits=self.ln1(x)
         
         B,T,C=logits.shape
